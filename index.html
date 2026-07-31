@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>PrioBox</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="drag-region"></div>
+
+  <header class="app-header">
+    <h1>PrioBox</h1>
+    <p class="subtitle">Drag to reorder · drag right to finish</p>
+  </header>
+
+  <form id="add-form" class="add-form" autocomplete="off">
+    <input id="add-input" type="text" placeholder="Add a task and press Enter…" maxlength="120" />
+    <button type="submit" class="add-btn" title="Add task">+</button>
+  </form>
+
+  <main class="board">
+    <section class="list-col">
+      <ul id="task-list" class="task-list"></ul>
+      <p id="empty-hint" class="empty-hint">No tasks yet. Add one above to get started.</p>
+    </section>
+
+    <section id="done-zone" class="done-zone">
+      <div class="done-inner">
+        <span class="done-check">✓</span>
+        <span class="done-label">Drop here<br />to finish</span>
+        <span class="done-count" id="done-count">0 done</span>
+      </div>
+    </section>
+  </main>
+
+  <!-- Timer picker modal -->
+  <div id="timer-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h2 id="timer-modal-title">Set a countdown</h2>
+      <p id="timer-modal-task" class="modal-task"></p>
+      <div class="stepper">
+        <button type="button" id="dec-btn" class="step-btn" aria-label="Less time">−</button>
+        <div class="stepper-value">
+          <span id="duration-label">30m</span>
+          <span class="stepper-hint">30-minute steps</span>
+        </div>
+        <button type="button" id="inc-btn" class="step-btn" aria-label="More time">+</button>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="timer-cancel" class="btn ghost">Cancel</button>
+        <button type="button" id="timer-start" class="btn primary">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

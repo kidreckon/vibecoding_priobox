@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>Timer</title>
+  <link rel="stylesheet" href="floating.css" />
+</head>
+<body>
+  <div class="widget" id="widget">
+    <div class="ring-wrap">
+      <svg viewBox="0 0 44 44" class="ring">
+        <circle class="ring-bg" cx="22" cy="22" r="19" />
+        <circle class="ring-fg" id="ring-fg" cx="22" cy="22" r="19" />
+      </svg>
+    </div>
+    <div class="info">
+      <div class="task-name" id="task-name">Task</div>
+      <div class="countdown" id="countdown">00:00</div>
+    </div>
+    <div class="controls">
+      <button class="ctrl" id="pause-btn" title="Pause">⏸</button>
+      <button class="ctrl stop" id="stop-btn" title="Stop">■</button>
+    </div>
+  </div>
+  <script src="floating.js"></script>
+</body>
+</html>

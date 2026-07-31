@@ -1,0 +1,40 @@
+{
+  "name": "priobox",
+  "productName": "PrioBox",
+  "version": "1.0.0",
+  "description": "An offline macOS task board with smooth drag-to-reorder, per-task colors, a done zone, and a floating desktop countdown timer that tracks time spent.",
+  "main": "main.js",
+  "author": "PrioBox",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.priobox.app",
+    "productName": "PrioBox",
+    "files": [
+      "main.js",
+      "preload.js",
+      "floating-preload.js",
+      "index.html",
+      "styles.css",
+      "renderer.js",
+      "floating.html",
+      "floating.css",
+      "floating.js"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^32.1.2",
+    "electron-builder": "^25.0.5"
+  }
+}
