@@ -11,6 +11,11 @@ lives in a local JSON file on your Mac.
   slot when you let go.
 - **Drag to finish.** Drop a card onto the green **Done** zone on the right and
   it animates away and leaves the row. A running "done" count is kept.
+- **History of completed tasks.** Click **History** in the top-right (or the
+  count inside the Done zone) to see everything you've finished — each with its
+  color, the time tracked against it, and when it was completed. The panel also
+  totals your tasks done and time tracked. **Restore** puts a task back on the
+  board; **Clear history** wipes the archive (two-step confirm).
 - **Recolor any task.** Click the 🎨 button on a card and pick from a palette.
   The color shows up as the card's accent stripe (and on the floating timer).
 - **Per-task countdown.** Click ▶ on a card, choose a duration in **30-minute
@@ -62,7 +67,7 @@ Electron, no runtime dependencies:
 | --- | --- |
 | `main.js` | Main process: windows, the always-on-top floating timer, JSON persistence, IPC |
 | `preload.js` / `floating-preload.js` | Locked-down `contextBridge` APIs (no Node in the renderers) |
-| `index.html` / `styles.css` / `renderer.js` | Main board: tasks, drag, colors, timer modal, countdown clock |
+| `index.html` / `styles.css` / `renderer.js` | Main board: tasks, drag, colors, timer modal, countdown clock, completed-task history |
 | `floating.html` / `floating.css` / `floating.js` | The desktop countdown widget |
 
 The renderer owns the single source of truth and the ticking clock; the floating

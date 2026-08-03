@@ -8,7 +8,7 @@ const PALETTE = [
   '#20c6d6', '#c86bff', '#ff7ac0', '#8a94a6'
 ];
 
-let state = { tasks: [], doneCount: 0 };
+let state = { tasks: [], done: [], doneCount: 0 };
 
 // Runtime timer (not persisted, except the accumulated secondsSpent on a task).
 let active = null; // { taskId, remaining, total, running, intervalId }
@@ -16,6 +16,9 @@ let active = null; // { taskId, remaining, total, running, intervalId }
 // Drag runtime.
 let drag = null;
 let doneArmed = false;
+// Set when a task is dropped on the done zone, so the trailing click doesn't
+// also open the history panel.
+let lastDropAt = 0;
 
 // ===========================================================================
 // DOM refs
@@ -40,7 +43,14 @@ let modalMinutes = 30;
 async function boot() {
   const loaded = await window.api.loadState();
   if (loaded && Array.isArray(loaded.tasks)) {
-    state = { tasks: loaded.tasks, doneCount: loaded.doneCount || 0 };
+    const done = Array.isArray(loaded.done) ? loaded.done : [];
+    state = {
+      tasks: loaded.tasks,
+      done,
+      // Saves made before the archive existed only had a bare count; keep it so
+      // the lifetime total stays honest.
+      doneCount: typeof loaded.doneCount === 'number' ? loaded.doneCount : done.length
+    };
     // Backfill any missing fields from older saves.
     state.tasks.forEach((t, i) => {
       if (!t.color) t.color = PALETTE[i % PALETTE.length];
@@ -349,6 +359,7 @@ function onPointerUp() {
   if (doneArmed) {
     finishTask(drag.id, el, ph);
     doneArmed = false;
+    lastDropAt = Date.now();
     doneZone.classList.remove('armed');
     drag = null;
     return;
@@ -402,6 +413,18 @@ function finishTask(id, el, ph) {
   }, 200);
 
   if (active && active.taskId === id) stopTimer();
+
+  // Archive it before it leaves the row, so the history panel can show it.
+  const task = getTask(id);
+  if (task) {
+    state.done.unshift({
+      id: task.id,
+      title: task.title,
+      color: task.color,
+      secondsSpent: task.secondsSpent,
+      completedAt: Date.now()
+    });
+  }
 
   state.tasks = state.tasks.filter((t) => t.id !== id);
   state.doneCount += 1;
@@ -536,6 +559,153 @@ window.api.onFloatingControl((action) => {
     setRunningVisual(active.taskId, true);
     window.api.timerUpdate(floatingPayload());
   }
+});
+
+// ===========================================================================
+// Completed-task history
+// ===========================================================================
+const historyModal = document.getElementById('history-modal');
+const historyList = document.getElementById('history-list');
+const historyEmpty = document.getElementById('history-empty');
+const historyLegacy = document.getElementById('history-legacy');
+const statCount = document.getElementById('stat-count');
+const statTime = document.getElementById('stat-time');
+const clearBtn = document.getElementById('history-clear');
+
+function formatWhen(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const dayMs = 86400000;
+  const diffDays = Math.floor((startOfToday - d.getTime()) / dayMs);
+
+  if (d.getTime() >= startOfToday.getTime()) return `Today ${time}`;
+  if (diffDays < 1) return `Yesterday ${time}`;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ` ${time}`;
+}
+
+function openHistory() {
+  renderHistory();
+  historyModal.hidden = false;
+}
+
+function closeHistory() {
+  historyModal.hidden = true;
+  resetClearBtn();
+}
+
+function renderHistory() {
+  historyList.innerHTML = '';
+
+  for (const entry of state.done) {
+    const li = document.createElement('li');
+    li.className = 'history-item';
+    li.style.setProperty('--task-color', entry.color || '#6c7bff');
+
+    const dot = document.createElement('span');
+    dot.className = 'history-dot';
+
+    const body = document.createElement('div');
+    body.className = 'history-body';
+
+    const title = document.createElement('div');
+    title.className = 'history-title';
+    title.textContent = entry.title;
+
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    const when = formatWhen(entry.completedAt);
+    meta.textContent = when
+      ? `${formatSpent(entry.secondsSpent || 0)} tracked · ${when}`
+      : `${formatSpent(entry.secondsSpent || 0)} tracked`;
+
+    body.append(title, meta);
+
+    const restore = document.createElement('button');
+    restore.className = 'restore-btn';
+    restore.textContent = 'Restore';
+    restore.title = 'Put this task back on the board';
+    restore.addEventListener('click', () => restoreTask(entry.id));
+
+    li.append(dot, body, restore);
+    historyList.appendChild(li);
+  }
+
+  historyEmpty.style.display = state.done.length ? 'none' : 'block';
+
+  const totalSeconds = state.done.reduce((sum, e) => sum + (e.secondsSpent || 0), 0);
+  statCount.textContent = String(state.doneCount);
+  statTime.textContent = formatSpent(totalSeconds);
+
+  // Tasks finished before the archive existed have no detail to show.
+  const untracked = state.doneCount - state.done.length;
+  if (untracked > 0) {
+    historyLegacy.hidden = false;
+    historyLegacy.textContent =
+      `+ ${untracked} finished before history was recorded`;
+  } else {
+    historyLegacy.hidden = true;
+  }
+}
+
+function restoreTask(entryId) {
+  const idx = state.done.findIndex((e) => e.id === entryId);
+  if (idx === -1) return;
+
+  const [entry] = state.done.splice(idx, 1);
+  state.tasks.push({
+    id: entry.id,
+    title: entry.title,
+    color: entry.color || PALETTE[0],
+    secondsSpent: entry.secondsSpent || 0
+  });
+  state.doneCount = Math.max(0, state.doneCount - 1);
+
+  render();
+  renderHistory();
+  save();
+}
+
+// Two-step confirm so a stray click can't wipe the archive.
+let clearArmed = false;
+function resetClearBtn() {
+  clearArmed = false;
+  clearBtn.textContent = 'Clear history';
+  clearBtn.classList.remove('confirming');
+}
+
+clearBtn.addEventListener('click', () => {
+  if (!clearArmed) {
+    clearArmed = true;
+    clearBtn.textContent = 'Tap again to clear';
+    clearBtn.classList.add('confirming');
+    return;
+  }
+  state.done = [];
+  state.doneCount = 0;
+  resetClearBtn();
+  renderHistory();
+  renderDoneCount();
+  save();
+});
+
+document.getElementById('history-btn').addEventListener('click', openHistory);
+document.getElementById('history-close').addEventListener('click', closeHistory);
+doneZone.addEventListener('click', () => {
+  if (Date.now() - lastDropAt < 400) return; // just finished a drop here
+  openHistory();
+});
+historyModal.addEventListener('click', (e) => {
+  if (e.target === historyModal) closeHistory();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!historyModal.hidden) closeHistory();
+  else if (!modal.hidden) closeTimerModal();
 });
 
 // Ask for notification permission up front (harmless if already granted).

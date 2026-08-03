@@ -11,8 +11,13 @@
   <div class="drag-region"></div>
 
   <header class="app-header">
-    <h1>PrioBox</h1>
-    <p class="subtitle">Drag to reorder · drag right to finish</p>
+    <div class="header-text">
+      <h1>PrioBox</h1>
+      <p class="subtitle">Drag to reorder · drag right to finish</p>
+    </div>
+    <button type="button" id="history-btn" class="history-btn" title="Completed tasks">
+      History
+    </button>
   </header>
 
   <form id="add-form" class="add-form" autocomplete="off">
@@ -51,6 +56,37 @@
       <div class="modal-actions">
         <button type="button" id="timer-cancel" class="btn ghost">Cancel</button>
         <button type="button" id="timer-start" class="btn primary">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Completed-task history -->
+  <div id="history-modal" class="modal-overlay" hidden>
+    <div class="modal wide">
+      <div class="history-head">
+        <h2>Completed</h2>
+        <button type="button" id="history-close" class="close-btn" title="Close">✕</button>
+      </div>
+
+      <div class="history-summary">
+        <div class="stat">
+          <span class="stat-value" id="stat-count">0</span>
+          <span class="stat-label">tasks done</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-time">0m</span>
+          <span class="stat-label">time tracked</span>
+        </div>
+      </div>
+
+      <ul id="history-list" class="history-list"></ul>
+      <p id="history-empty" class="empty-hint">
+        Nothing finished yet. Drag a task onto the Done zone.
+      </p>
+      <p id="history-legacy" class="history-legacy" hidden></p>
+
+      <div class="modal-actions">
+        <button type="button" id="history-clear" class="btn ghost danger">Clear history</button>
       </div>
     </div>
   </div>
