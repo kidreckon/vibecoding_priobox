@@ -15,5 +15,10 @@ contextBridge.exposeInMainWorld('api', {
   timerRefresh: () => ipcRenderer.send('timer:refresh'),
 
   onTimerState: (cb) => ipcRenderer.on('timer:state', (_evt, state) => cb(state)),
-  onTimerStopped: (cb) => ipcRenderer.on('timer:stopped', () => cb())
+  onTimerStopped: (cb) => ipcRenderer.on('timer:stopped', () => cb()),
+
+  // Diagnostics
+  diag: (line) => ipcRenderer.send('diag', line),
+  appInfo: () => ipcRenderer.invoke('app:info'),
+  revealLog: () => ipcRenderer.invoke('app:revealLog')
 });

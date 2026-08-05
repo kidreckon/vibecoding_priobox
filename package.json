@@ -1,7 +1,7 @@
 {
   "name": "priobox",
   "productName": "PrioBox",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "An offline macOS task board with smooth drag-to-reorder, per-task colors, a done zone, and a floating desktop countdown timer that tracks time spent.",
   "main": "main.js",
   "author": "PrioBox",

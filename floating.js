@@ -29,7 +29,24 @@ function remainingMs() {
   return Math.max(0, last.endsAt - Date.now());
 }
 
+// The widget repaints every 250ms. A materially larger gap means this window
+// stopped being scheduled, which is exactly the freeze being chased.
+let lastPaintAt = 0;
+
+function notePaintGap() {
+  const now = Date.now();
+  if (lastPaintAt && now - lastPaintAt > 2000) {
+    window.floatApi.diag('STALL  widget was not scheduled for ' +
+      Math.round((now - lastPaintAt) / 1000) + 's' +
+      '  keepAlive=' + !!keepAlive +
+      '  audioCtx=' + (audioCtx ? audioCtx.state : 'none') +
+      '  hidden=' + document.hidden);
+  }
+  lastPaintAt = now;
+}
+
 function paint() {
+  notePaintGap();
   if (!last) return;
 
   const remaining = remainingMs();
@@ -90,8 +107,10 @@ function startKeepAlive() {
     gain.connect(audioCtx.destination);
     osc.start();
     keepAlive = { osc, gain };
+    window.floatApi.diag('keep-alive tone started  ctx=' + audioCtx.state);
   } catch (err) {
     keepAlive = null;
+    window.floatApi.diag('keep-alive FAILED to start: ' + (err && err.message));
   }
 }
 

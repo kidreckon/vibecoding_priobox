@@ -563,7 +563,16 @@ window.api.onTimerState((s) => {
 });
 
 // Own ticker plus wake hooks — independent of updates arriving.
-setInterval(applyTimerState, 1000);
+let lastBoardTickAt = 0;
+setInterval(() => {
+  const now = Date.now();
+  if (lastBoardTickAt && now - lastBoardTickAt > 3000 && lastTimerState) {
+    window.api.diag('STALL  board window was not scheduled for ' +
+      Math.round((now - lastBoardTickAt) / 1000) + 's  hidden=' + document.hidden);
+  }
+  lastBoardTickAt = now;
+  applyTimerState();
+}, 1000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     applyTimerState();
@@ -730,6 +739,19 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!historyModal.hidden) closeHistory();
   else if (!modal.hidden) closeTimerModal();
+});
+
+// Stamp the running build into the UI so it is always obvious which code is
+// actually executing — a rebuilt .app and a `npm start` run can differ.
+document.getElementById('reveal-log').addEventListener('click', () => {
+  window.api.revealLog();
+});
+
+window.api.appInfo().then((info) => {
+  const badge = document.getElementById('version-badge');
+  badge.textContent = 'v' + info.version + ' · ' + info.build +
+    (info.packaged ? ' · app' : ' · dev');
+  badge.title = 'Diagnostics log: ' + info.logFile;
 });
 
 boot();

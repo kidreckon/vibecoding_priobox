@@ -29,6 +29,33 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // ---------------------------------------------------------------------------
 const dataFile = path.join(app.getPath('userData'), 'priobox-data.json');
 
+// ---------------------------------------------------------------------------
+// Diagnostics
+//
+// Four attempts at the freezing countdown have failed to shift the symptom, so
+// rather than guess again this records what actually happens on the machine:
+// which process stalls, for how long, and whether the App Nap keep-alive is
+// really playing. Everything stays in a local file.
+// ---------------------------------------------------------------------------
+const APP_VERSION = require('./package.json').version;
+const BUILD_TAG = 'diag-1';
+const logFile = path.join(app.getPath('userData'), 'priobox-diagnostics.log');
+const MAX_LOG_BYTES = 512 * 1024;
+
+function diag(line) {
+  try {
+    try {
+      if (fs.statSync(logFile).size > MAX_LOG_BYTES) fs.unlinkSync(logFile);
+    } catch (err) {
+      // No log yet.
+    }
+    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    fs.appendFileSync(logFile, stamp + '  ' + line + '\n', 'utf8');
+  } catch (err) {
+    // Diagnostics must never break the app.
+  }
+}
+
 function loadState() {
   try {
     const raw = fs.readFileSync(dataFile, 'utf8');
@@ -75,9 +102,11 @@ function createMainWindow() {
   // Anything that means the board is visible again: catch the timer up and
   // push the current state, so a window reopened mid-countdown adopts it.
   mainWindow.webContents.on('did-finish-load', refreshTimer);
-  mainWindow.on('restore', refreshTimer);
-  mainWindow.on('show', refreshTimer);
+  mainWindow.on('restore', () => { diag('board restored'); refreshTimer(); });
+  mainWindow.on('show', () => { diag('board shown'); refreshTimer(); });
   mainWindow.on('focus', refreshTimer);
+  mainWindow.on('minimize', () => diag('board minimized'));
+  mainWindow.on('hide', () => diag('board hidden'));
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -212,8 +241,34 @@ function syncFromClock() {
   timer.remainingMs = Math.max(0, timer.endsAt - Date.now());
 }
 
+let lastTickAt = 0;
+let lastReportAt = 0;
+
+// A tick is scheduled every 250ms. A materially larger gap means this process
+// was not being scheduled — the signature of the app being suspended.
+function noteTickGap() {
+  const now = Date.now();
+  if (lastTickAt && now - lastTickAt > 2000) {
+    diag('STALL  main process was not scheduled for ' +
+      Math.round((now - lastTickAt) / 1000) + 's');
+  }
+  lastTickAt = now;
+
+  if (now - lastReportAt < 15000) return;
+  lastReportAt = now;
+
+  const w = floatingWindow && !floatingWindow.isDestroyed() ? floatingWindow : null;
+  const b = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  diag('state  remaining=' + Math.round(timer.remainingMs / 1000) + 's' +
+    '  widgetVisible=' + (w ? w.isVisible() : 'no-window') +
+    '  widgetAudible=' + (w ? w.webContents.isCurrentlyAudible() : 'n/a') +
+    '  boardMinimized=' + (b ? b.isMinimized() : 'no-window') +
+    '  blocker=' + (blockerId !== null && powerSaveBlocker.isStarted(blockerId)));
+}
+
 function tick() {
   if (!timer) return;
+  noteTickGap();
   syncFromClock();
   if (timer.running && timer.remainingMs <= 0) finishTimer();
   else broadcastTimer();
@@ -290,6 +345,20 @@ function resumeTimer() {
 ipcMain.handle('store:load', () => loadState());
 ipcMain.handle('store:save', (_evt, state) => saveState(state));
 
+ipcMain.on('diag', (_evt, line) => diag(String(line).slice(0, 300)));
+ipcMain.handle('app:info', () => ({
+  version: APP_VERSION,
+  build: BUILD_TAG,
+  packaged: app.isPackaged,
+  logFile
+}));
+ipcMain.handle('app:revealLog', () => {
+  const { shell } = require('electron');
+  diag('--- log revealed by user ---');
+  shell.showItemInFolder(logFile);
+  return logFile;
+});
+
 ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds, baseSpent }) => {
   if (timer && timer.intervalId) clearInterval(timer.intervalId);
   clearTimeout(hideTimeout);
@@ -309,6 +378,9 @@ ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds, baseSpent }) =
     intervalId: setInterval(tick, TICK_MS)
   };
   holdAwake();
+  lastTickAt = 0;
+  lastReportAt = 0;
+  diag('timer started  ' + Math.round(ms / 1000) + 's  "' + title + '"');
 
   const win = createFloatingWindow();
   const reveal = () => {
@@ -359,6 +431,10 @@ function disableAppNapPermanently() {
 }
 
 app.whenReady().then(() => {
+  diag('=== PrioBox ' + APP_VERSION + ' (' + BUILD_TAG + ') started' +
+    '  packaged=' + app.isPackaged +
+    '  electron=' + process.versions.electron +
+    '  platform=' + process.platform + ' ===');
   disableAppNapPermanently();
   createMainWindow();
 

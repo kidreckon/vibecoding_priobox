@@ -13,7 +13,10 @@
   <header class="app-header">
     <div class="header-text">
       <h1>PrioBox</h1>
-      <p class="subtitle">Drag to reorder · drag right to finish</p>
+      <p class="subtitle">
+        Drag to reorder · drag right to finish
+        <span id="version-badge" class="version-badge"></span>
+      </p>
     </div>
     <button type="button" id="history-btn" class="history-btn" title="Completed tasks">
       History
@@ -88,6 +91,7 @@
       <div class="modal-actions">
         <button type="button" id="history-clear" class="btn ghost danger">Clear history</button>
       </div>
+      <button type="button" id="reveal-log" class="log-link">Show diagnostics log</button>
     </div>
   </div>
 
