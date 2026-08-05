@@ -7,12 +7,12 @@ contextBridge.exposeInMainWorld('api', {
   loadState: () => ipcRenderer.invoke('store:load'),
   saveState: (state) => ipcRenderer.invoke('store:save', state),
 
-  // Timer mirroring to the floating desktop window.
+  // The countdown itself is owned by the main process; these just drive it.
   timerStart: (payload) => ipcRenderer.send('timer:start', payload),
-  timerUpdate: (payload) => ipcRenderer.send('timer:update', payload),
+  timerPause: () => ipcRenderer.send('timer:pause'),
+  timerResume: () => ipcRenderer.send('timer:resume'),
   timerStop: () => ipcRenderer.send('timer:stop'),
 
-  // Controls coming back from the floating window.
-  onFloatingControl: (cb) =>
-    ipcRenderer.on('floating:control', (_evt, action) => cb(action))
+  onTimerState: (cb) => ipcRenderer.on('timer:state', (_evt, state) => cb(state)),
+  onTimerStopped: (cb) => ipcRenderer.on('timer:stopped', () => cb())
 });

@@ -22,7 +22,9 @@ window.floatApi.onState((state) => {
   running = !!state.running;
 
   widget.style.setProperty('--accent', state.color || '#6c7bff');
-  taskName.textContent = state.title || 'Task';
+  taskName.textContent = state.finished
+    ? "Time's up — " + (state.title || 'Task')
+    : state.title || 'Task';
   countdown.textContent = fmt(state.remaining);
 
   const frac = state.total > 0 ? state.remaining / state.total : 0;

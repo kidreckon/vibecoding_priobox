@@ -1,8 +1,17 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// Chromium aggressively throttles (and eventually freezes) timers in renderers
+// that are hidden, unfocused or occluded — which is precisely the situation a
+// desktop countdown runs in. The authoritative clock therefore lives in this
+// process, which is plain Node and never throttled. These switches additionally
+// keep the renderers awake enough to paint the updates promptly.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 // ---------------------------------------------------------------------------
 // Persistence: a single JSON file in the OS userData dir keeps everything
@@ -16,7 +25,7 @@ function loadState() {
     return JSON.parse(raw);
   } catch (err) {
     // First run (or unreadable file): start empty.
-    return { tasks: [], doneCount: 0 };
+    return { tasks: [], done: [], doneCount: 0 };
   }
 }
 
@@ -46,11 +55,12 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -88,7 +98,8 @@ function createFloatingWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'floating-preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
@@ -97,7 +108,7 @@ function createFloatingWindow() {
   floatingWindow.setAlwaysOnTop(true, 'screen-saver');
   floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  floatingWindow.loadFile('floating.html');
+  floatingWindow.loadFile(path.join(__dirname, 'floating.html'));
 
   floatingWindow.on('closed', () => {
     floatingWindow = null;
@@ -107,44 +118,158 @@ function createFloatingWindow() {
 }
 
 // ---------------------------------------------------------------------------
+// Countdown timer — authoritative, wall-clock based.
+//
+// Elapsed time is derived from Date.now() deltas rather than counted ticks, so
+// a delayed, coalesced or missed interval (throttling, system sleep, heavy
+// load) self-corrects on the next tick instead of losing time.
+// ---------------------------------------------------------------------------
+const TICK_MS = 250;
+const FINISHED_LINGER_MS = 6000;
+
+let timer = null;
+let hideTimeout = null;
+
+function timerPayload(extra) {
+  return Object.assign(
+    {
+      taskId: timer.taskId,
+      title: timer.title,
+      color: timer.color,
+      remaining: Math.ceil(timer.remainingMs / 1000),
+      total: Math.round(timer.totalMs / 1000),
+      spentMs: timer.spentMs,
+      running: timer.running
+    },
+    extra || {}
+  );
+}
+
+function broadcastTimer(extra) {
+  if (!timer) return;
+  const payload = timerPayload(extra);
+  if (floatingWindow && !floatingWindow.isDestroyed()) {
+    floatingWindow.webContents.send('timer:state', payload);
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('timer:state', payload);
+  }
+}
+
+// Fold the real time that has passed since the last accounting into the timer.
+function applyElapsed() {
+  const now = Date.now();
+  const delta = now - timer.lastAt;
+  timer.lastAt = now;
+  if (!timer.running || delta <= 0) return;
+  // Never bank more "time spent" than the countdown actually had left, so a
+  // laptop sleeping through the timer just completes it rather than inflating
+  // the tracked minutes.
+  const applied = Math.min(delta, timer.remainingMs);
+  timer.remainingMs -= applied;
+  timer.spentMs += applied;
+}
+
+function tick() {
+  if (!timer) return;
+  applyElapsed();
+  if (timer.remainingMs <= 0) finishTimer();
+  else broadcastTimer();
+}
+
+function finishTimer() {
+  const title = timer.title;
+  timer.running = false;
+  timer.remainingMs = 0;
+  if (timer.intervalId) {
+    clearInterval(timer.intervalId);
+    timer.intervalId = null;
+  }
+  broadcastTimer({ finished: true });
+
+  try {
+    new Notification({
+      title: 'PrioBox',
+      body: title ? `“${title}” — time's up!` : "Time's up!"
+    }).show();
+  } catch (err) {
+    // Notifications may be unavailable; the widget still shows 00:00.
+  }
+
+  // Leave the widget up briefly as a visual cue, then tuck it away.
+  clearTimeout(hideTimeout);
+  hideTimeout = setTimeout(hideFloating, FINISHED_LINGER_MS);
+}
+
+function hideFloating() {
+  if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.hide();
+}
+
+function stopTimer() {
+  if (timer && timer.intervalId) clearInterval(timer.intervalId);
+  timer = null;
+  clearTimeout(hideTimeout);
+  hideFloating();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('timer:stopped');
+  }
+}
+
+function pauseTimer() {
+  if (!timer || !timer.running) return;
+  applyElapsed();
+  timer.running = false;
+  broadcastTimer();
+}
+
+function resumeTimer() {
+  if (!timer || timer.running) return;
+  timer.lastAt = Date.now();
+  timer.running = true;
+  broadcastTimer();
+}
+
+// ---------------------------------------------------------------------------
 // IPC wiring
 // ---------------------------------------------------------------------------
 ipcMain.handle('store:load', () => loadState());
 ipcMain.handle('store:save', (_evt, state) => saveState(state));
 
-// Main renderer owns the ticking clock and the source of truth. These messages
-// just mirror the current timer into the floating desktop window.
-ipcMain.on('timer:start', (_evt, payload) => {
+ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds }) => {
+  if (timer && timer.intervalId) clearInterval(timer.intervalId);
+  clearTimeout(hideTimeout);
+
+  const ms = Math.max(1, Number(seconds) || 0) * 1000;
+  timer = {
+    taskId,
+    title,
+    color,
+    totalMs: ms,
+    remainingMs: ms,
+    spentMs: 0,
+    running: true,
+    lastAt: Date.now(),
+    intervalId: setInterval(tick, TICK_MS)
+  };
+
   const win = createFloatingWindow();
-  const send = () => win.webContents.send('timer:state', payload);
-  if (win.webContents.isLoading()) {
-    win.webContents.once('did-finish-load', () => {
-      send();
-      win.showInactive();
-    });
-  } else {
-    send();
+  const reveal = () => {
+    broadcastTimer();
     win.showInactive();
-  }
+  };
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal);
+  else reveal();
 });
 
-ipcMain.on('timer:update', (_evt, payload) => {
-  if (floatingWindow && !floatingWindow.isDestroyed()) {
-    floatingWindow.webContents.send('timer:state', payload);
-  }
-});
+ipcMain.on('timer:pause', pauseTimer);
+ipcMain.on('timer:resume', resumeTimer);
+ipcMain.on('timer:stop', stopTimer);
 
-ipcMain.on('timer:stop', () => {
-  if (floatingWindow && !floatingWindow.isDestroyed()) {
-    floatingWindow.hide();
-  }
-});
-
-// Controls pressed on the floating window are relayed back to the main renderer.
+// Controls pressed on the floating widget act on the same authoritative timer.
 ipcMain.on('floating:control', (_evt, action) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('floating:control', action);
-  }
+  if (action === 'pause') pauseTimer();
+  else if (action === 'resume') resumeTimer();
+  else if (action === 'stop') stopTimer();
 });
 
 // ---------------------------------------------------------------------------

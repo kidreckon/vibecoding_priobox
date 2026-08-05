@@ -10,8 +10,13 @@ const PALETTE = [
 
 let state = { tasks: [], done: [], doneCount: 0 };
 
-// Runtime timer (not persisted, except the accumulated secondsSpent on a task).
-let active = null; // { taskId, remaining, total, running, intervalId }
+// Mirror of the countdown the main process is running. The clock itself lives
+// there so it keeps ticking while this window is hidden or unfocused; here we
+// only track which task it belongs to and what its time-spent baseline was.
+let active = null; // { taskId, baseSpent, running }
+
+// Throttles disk writes while a countdown is running.
+let lastSaveAt = 0;
 
 // Drag runtime.
 let drag = null;
@@ -478,87 +483,74 @@ modal.addEventListener('click', (e) => {
 });
 
 function startTimer(id, seconds) {
-  // Only one timer at a time.
-  if (active) stopTimer();
-
   const task = getTask(id);
   if (!task) return;
 
+  // Only one countdown at a time; starting a new one replaces the old.
+  if (active) setRunningVisual(active.taskId, false);
   active = {
     taskId: id,
-    remaining: seconds,
-    total: seconds,
-    running: true,
-    intervalId: null
+    baseSpent: task.secondsSpent,
+    running: true
   };
+  lastSaveAt = Date.now();
 
   setRunningVisual(id, true);
-  window.api.timerStart(floatingPayload());
-  active.intervalId = setInterval(tick, 1000);
-}
-
-function floatingPayload() {
-  const task = getTask(active.taskId);
-  return {
-    taskId: active.taskId,
-    title: task ? task.title : '',
-    color: task ? task.color : '#6c7bff',
-    remaining: Math.max(0, active.remaining),
-    total: active.total,
-    running: active.running
-  };
-}
-
-function tick() {
-  if (!active || !active.running) return;
-  active.remaining -= 1;
-
-  const task = getTask(active.taskId);
-  if (task) task.secondsSpent += 1;
-  updateTaskTimeLabel(active.taskId);
-
-  window.api.timerUpdate(floatingPayload());
-
-  if (active.remaining % 15 === 0) save();
-
-  if (active.remaining <= 0) completeTimer();
-}
-
-function completeTimer() {
-  const task = getTask(active.taskId);
-  try {
-    // eslint-disable-next-line no-new
-    new Notification('PrioBox', {
-      body: task ? `“${task.title}” — time's up!` : "Time's up!"
-    });
-  } catch (_) { /* notifications may be unavailable */ }
-  stopTimer();
+  window.api.timerStart({
+    taskId: id,
+    title: task.title,
+    color: task.color,
+    seconds
+  });
 }
 
 function stopTimer() {
   if (!active) return;
   const id = active.taskId;
-  clearInterval(active.intervalId);
   active = null;
   setRunningVisual(id, false);
   window.api.timerStop();
   save();
 }
 
-// Controls relayed from the floating desktop window.
-window.api.onFloatingControl((action) => {
-  if (!active) return;
-  if (action === 'stop') {
-    stopTimer();
-  } else if (action === 'pause') {
-    active.running = false;
-    setRunningVisual(active.taskId, false);
-    window.api.timerUpdate(floatingPayload());
-  } else if (action === 'resume') {
-    active.running = true;
-    setRunningVisual(active.taskId, true);
-    window.api.timerUpdate(floatingPayload());
+// The main process drives the clock and pushes state here each tick.
+window.api.onTimerState((s) => {
+  if (!active || active.taskId !== s.taskId) return;
+
+  // Recompute from the authoritative elapsed total rather than accumulating
+  // locally, so a dropped or duplicated update can't drift the tracked time.
+  const task = getTask(s.taskId);
+  if (task) {
+    task.secondsSpent = active.baseSpent + Math.floor(s.spentMs / 1000);
+    updateTaskTimeLabel(s.taskId);
   }
+
+  if (active.running !== s.running) {
+    active.running = s.running;
+    setRunningVisual(s.taskId, s.running);
+  }
+
+  if (s.finished) {
+    active = null;
+    setRunningVisual(s.taskId, false);
+    save();
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastSaveAt > 10000) {
+    lastSaveAt = now;
+    save();
+  }
+});
+
+// Stop can also come from the floating widget's own button.
+window.api.onTimerStopped(() => {
+  if (!active) return;
+  const id = active.taskId;
+  active = null;
+  setRunningVisual(id, false);
+  save();
 });
 
 // ===========================================================================
@@ -707,10 +699,5 @@ document.addEventListener('keydown', (e) => {
   if (!historyModal.hidden) closeHistory();
   else if (!modal.hidden) closeTimerModal();
 });
-
-// Ask for notification permission up front (harmless if already granted).
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission().catch(() => {});
-}
 
 boot();
