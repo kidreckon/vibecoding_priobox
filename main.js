@@ -15,6 +15,13 @@ const fs = require('fs');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch(
+  'disable-features',
+  'TimerThrottlingForBackgroundTabs,IntensiveWakeUpThrottling,' +
+    'ExpensiveBackgroundTimerThrottling'
+);
+// The widget's App Nap keep-alive tone must be able to start on its own.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // ---------------------------------------------------------------------------
 // Persistence: a single JSON file in the OS userData dir keeps everything
@@ -109,7 +116,8 @@ function createFloatingWindow() {
       preload: path.join(__dirname, 'floating-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      autoplayPolicy: 'no-user-gesture-required'
     }
   });
 
@@ -333,7 +341,25 @@ ipcMain.on('floating:control', (_evt, action) => {
 });
 
 // ---------------------------------------------------------------------------
+// Belt and braces: NSAppSleepDisabled is the documented macOS opt-out from App
+// Nap, read at launch, so this takes effect from the next start onwards. Only
+// applied to the packaged app — a dev run would otherwise write it into
+// Electron's own shared defaults domain, affecting unrelated apps.
+function disableAppNapPermanently() {
+  if (process.platform !== 'darwin' || !app.isPackaged) return;
+  try {
+    const { systemPreferences } = require('electron');
+    if (systemPreferences.getUserDefault('NSAppSleepDisabled', 'boolean') === true) {
+      return;
+    }
+    systemPreferences.setUserDefault('NSAppSleepDisabled', 'boolean', true);
+  } catch (err) {
+    // Best effort; the widget's keep-alive tone is the primary defence.
+  }
+}
+
 app.whenReady().then(() => {
+  disableAppNapPermanently();
   createMainWindow();
 
   // Waking from system sleep, or the app being brought back to the front, are

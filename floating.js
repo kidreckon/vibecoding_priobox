@@ -55,12 +55,70 @@ function paint() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// App Nap keep-alive
+//
+// macOS suspends an entire app it judges to be doing nothing user-facing, which
+// froze this widget's clock even though it sits visible on the desktop —
+// restoring the board was what woke the app back up. A power-save blocker does
+// not cover this; on macOS it only asserts against system idle sleep. An app
+// that is playing audio, however, is exempt from App Nap outright, so while a
+// countdown runs we emit a continuous tone ~80 dB below anything audible. It is
+// the one lever that keeps the process scheduled from inside the app.
+// ---------------------------------------------------------------------------
+let audioCtx = null;
+let keepAlive = null;
+
+function startKeepAlive() {
+  if (keepAlive) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = audioCtx || new Ctx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    // The platform ignores output it considers silence (below roughly -60
+    // dBFS), so the amplitude has to clear that bar to count as "playing
+    // audio". Inaudibility therefore comes from the frequency, not the volume:
+    // 10 Hz is below the range of human hearing and far below what a laptop
+    // speaker can reproduce, while -48 dBFS is loud enough to register.
+    gain.gain.value = 0.004;
+    osc.frequency.value = 10;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    keepAlive = { osc, gain };
+  } catch (err) {
+    keepAlive = null;
+  }
+}
+
+function stopKeepAlive() {
+  try {
+    if (keepAlive) {
+      keepAlive.osc.stop();
+      keepAlive.osc.disconnect();
+      keepAlive.gain.disconnect();
+    }
+  } catch (err) {
+    // Already torn down.
+  }
+  keepAlive = null;
+  if (audioCtx && audioCtx.state === 'running') audioCtx.suspend();
+}
+
 window.floatApi.onState((state) => {
   widget.style.setProperty('--accent', state.color || '#6c7bff');
   if (!last || state.taskId !== last.taskId || state.running !== last.running) {
     reportedExpiry = false;
   }
   last = state;
+
+  if (state.running && !state.finished) startKeepAlive();
+  else stopKeepAlive();
+
   paint();
 });
 
