@@ -1,6 +1,9 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, screen, Notification } = require('electron');
+const {
+  app, BrowserWindow, ipcMain, screen, Notification,
+  powerSaveBlocker, powerMonitor
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -61,6 +64,13 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+
+  // Anything that means the board is visible again: catch the timer up and
+  // push the current state, so a window reopened mid-countdown adopts it.
+  mainWindow.webContents.on('did-finish-load', refreshTimer);
+  mainWindow.on('restore', refreshTimer);
+  mainWindow.on('show', refreshTimer);
+  mainWindow.on('focus', refreshTimer);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -129,6 +139,31 @@ const FINISHED_LINGER_MS = 6000;
 
 let timer = null;
 let hideTimeout = null;
+let blockerId = null;
+
+// macOS App Nap suspends an entire app once it has no visible windows —
+// minimising the board froze this process and with it the countdown. Holding a
+// power-save blocker for the life of a timer keeps the app scheduled. It only
+// prevents *app* suspension, so the display is still free to sleep.
+function holdAwake() {
+  if (blockerId !== null && powerSaveBlocker.isStarted(blockerId)) return;
+  try {
+    blockerId = powerSaveBlocker.start('prevent-app-suspension');
+  } catch (err) {
+    blockerId = null;
+  }
+}
+
+function releaseAwake() {
+  try {
+    if (blockerId !== null && powerSaveBlocker.isStarted(blockerId)) {
+      powerSaveBlocker.stop(blockerId);
+    }
+  } catch (err) {
+    // Nothing to release.
+  }
+  blockerId = null;
+}
 
 function timerPayload(extra) {
   return Object.assign(
@@ -139,6 +174,7 @@ function timerPayload(extra) {
       remaining: Math.ceil(timer.remainingMs / 1000),
       total: Math.round(timer.totalMs / 1000),
       spentMs: timer.spentMs,
+      baseSpent: timer.baseSpent,
       running: timer.running
     },
     extra || {}
@@ -177,6 +213,16 @@ function tick() {
   else broadcastTimer();
 }
 
+// Force the timer to catch up and repaint. Called from every path that means
+// "the app just woke up or became visible again", so even if the process was
+// suspended the countdown snaps to the true time instead of showing a stale
+// value or appearing to resume from where it froze.
+function refreshTimer() {
+  if (!timer) return;
+  if (timer.running) tick();
+  else broadcastTimer();
+}
+
 function finishTimer() {
   const title = timer.title;
   timer.running = false;
@@ -186,6 +232,7 @@ function finishTimer() {
     timer.intervalId = null;
   }
   broadcastTimer({ finished: true });
+  releaseAwake();
 
   try {
     new Notification({
@@ -208,6 +255,7 @@ function hideFloating() {
 function stopTimer() {
   if (timer && timer.intervalId) clearInterval(timer.intervalId);
   timer = null;
+  releaseAwake();
   clearTimeout(hideTimeout);
   hideFloating();
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -235,7 +283,7 @@ function resumeTimer() {
 ipcMain.handle('store:load', () => loadState());
 ipcMain.handle('store:save', (_evt, state) => saveState(state));
 
-ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds }) => {
+ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds, baseSpent }) => {
   if (timer && timer.intervalId) clearInterval(timer.intervalId);
   clearTimeout(hideTimeout);
 
@@ -247,10 +295,14 @@ ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds }) => {
     totalMs: ms,
     remainingMs: ms,
     spentMs: 0,
+    // The task's tracked seconds before this run, echoed back on every update
+    // so the board can recompute its total without keeping its own tally.
+    baseSpent: Number(baseSpent) || 0,
     running: true,
     lastAt: Date.now(),
     intervalId: setInterval(tick, TICK_MS)
   };
+  holdAwake();
 
   const win = createFloatingWindow();
   const reveal = () => {
@@ -276,9 +328,16 @@ ipcMain.on('floating:control', (_evt, action) => {
 app.whenReady().then(() => {
   createMainWindow();
 
+  // Waking from system sleep, or the app being brought back to the front, are
+  // the other moments a suspended timer needs to catch up.
+  powerMonitor.on('resume', refreshTimer);
+  powerMonitor.on('unlock-screen', refreshTimer);
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
+    } else {
+      refreshTimer();
     }
   });
 });

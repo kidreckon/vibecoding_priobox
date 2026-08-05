@@ -11,9 +11,9 @@ const PALETTE = [
 let state = { tasks: [], done: [], doneCount: 0 };
 
 // Mirror of the countdown the main process is running. The clock itself lives
-// there so it keeps ticking while this window is hidden or unfocused; here we
-// only track which task it belongs to and what its time-spent baseline was.
-let active = null; // { taskId, baseSpent, running }
+// there so it keeps ticking while this window is hidden, minimised or
+// unfocused; here we only track which task it belongs to.
+let active = null; // { taskId, running }
 
 // Throttles disk writes while a countdown is running.
 let lastSaveAt = 0;
@@ -488,11 +488,7 @@ function startTimer(id, seconds) {
 
   // Only one countdown at a time; starting a new one replaces the old.
   if (active) setRunningVisual(active.taskId, false);
-  active = {
-    taskId: id,
-    baseSpent: task.secondsSpent,
-    running: true
-  };
+  active = { taskId: id, running: true };
   lastSaveAt = Date.now();
 
   setRunningVisual(id, true);
@@ -500,7 +496,8 @@ function startTimer(id, seconds) {
     taskId: id,
     title: task.title,
     color: task.color,
-    seconds
+    seconds,
+    baseSpent: task.secondsSpent
   });
 }
 
@@ -515,15 +512,22 @@ function stopTimer() {
 
 // The main process drives the clock and pushes state here each tick.
 window.api.onTimerState((s) => {
-  if (!active || active.taskId !== s.taskId) return;
-
-  // Recompute from the authoritative elapsed total rather than accumulating
-  // locally, so a dropped or duplicated update can't drift the tracked time.
   const task = getTask(s.taskId);
-  if (task) {
-    task.secondsSpent = active.baseSpent + Math.floor(s.spentMs / 1000);
-    updateTaskTimeLabel(s.taskId);
+  if (!task) return; // task was finished or removed meanwhile
+
+  // Adopt a countdown this window didn't start — covers the board being
+  // reopened, reloaded or restored while a timer is already running.
+  if (!active || active.taskId !== s.taskId) {
+    if (active) setRunningVisual(active.taskId, false);
+    active = { taskId: s.taskId, running: s.running };
+    setRunningVisual(s.taskId, s.running);
   }
+
+  // Recompute from the authoritative baseline plus elapsed total rather than
+  // accumulating locally, so a dropped, duplicated or late update can't drift
+  // the tracked time.
+  task.secondsSpent = (s.baseSpent || 0) + Math.floor(s.spentMs / 1000);
+  updateTaskTimeLabel(s.taskId);
 
   if (active.running !== s.running) {
     active.running = s.running;
