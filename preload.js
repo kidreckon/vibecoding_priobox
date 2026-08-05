@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   timerPause: () => ipcRenderer.send('timer:pause'),
   timerResume: () => ipcRenderer.send('timer:resume'),
   timerStop: () => ipcRenderer.send('timer:stop'),
+  timerRefresh: () => ipcRenderer.send('timer:refresh'),
 
   onTimerState: (cb) => ipcRenderer.on('timer:state', (_evt, state) => cb(state)),
   onTimerStopped: (cb) => ipcRenderer.on('timer:stopped', () => cb())

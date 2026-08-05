@@ -505,38 +505,45 @@ function stopTimer() {
   if (!active) return;
   const id = active.taskId;
   active = null;
+  lastTimerState = null;
   setRunningVisual(id, false);
   window.api.timerStop();
   save();
 }
 
-// The main process drives the clock and pushes state here each tick.
-window.api.onTimerState((s) => {
+// Last state pushed by the main process, which owns the countdown.
+let lastTimerState = null;
+
+// The tracked total is derived from the deadline against the wall clock, not
+// accumulated from updates, so it is correct on the first repaint after this
+// window has been minimised, hidden or otherwise starved of ticks.
+function applyTimerState() {
+  const s = lastTimerState;
+  if (!s) return;
+
   const task = getTask(s.taskId);
   if (!task) return; // task was finished or removed meanwhile
 
-  // Adopt a countdown this window didn't start — covers the board being
-  // reopened, reloaded or restored while a timer is already running.
-  if (!active || active.taskId !== s.taskId) {
-    if (active) setRunningVisual(active.taskId, false);
-    active = { taskId: s.taskId, running: s.running };
-    setRunningVisual(s.taskId, s.running);
-  }
+  const remaining = s.running
+    ? Math.max(0, s.endsAt - Date.now())
+    : s.remainingMs;
+  // Time spent on this run is exactly the part of the countdown consumed, so a
+  // long freeze can never bank more than the timer's own length.
+  const spentMs = Math.max(0, s.totalMs - remaining);
 
-  // Recompute from the authoritative baseline plus elapsed total rather than
-  // accumulating locally, so a dropped, duplicated or late update can't drift
-  // the tracked time.
-  task.secondsSpent = (s.baseSpent || 0) + Math.floor(s.spentMs / 1000);
+  task.secondsSpent = (s.baseSpent || 0) + Math.floor(spentMs / 1000);
   updateTaskTimeLabel(s.taskId);
 
-  if (active.running !== s.running) {
-    active.running = s.running;
+  if (!active || active.taskId !== s.taskId || active.running !== s.running) {
+    if (active && active.taskId !== s.taskId) setRunningVisual(active.taskId, false);
+    active = { taskId: s.taskId, running: s.running };
     setRunningVisual(s.taskId, s.running);
   }
 
   if (s.finished) {
     active = null;
     setRunningVisual(s.taskId, false);
+    lastTimerState = null;
     save();
     return;
   }
@@ -546,10 +553,31 @@ window.api.onTimerState((s) => {
     lastSaveAt = now;
     save();
   }
+}
+
+// Adopting on any incoming state covers the board being reopened, reloaded or
+// restored while a countdown is already running.
+window.api.onTimerState((s) => {
+  lastTimerState = s;
+  applyTimerState();
+});
+
+// Own ticker plus wake hooks — independent of updates arriving.
+setInterval(applyTimerState, 1000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    applyTimerState();
+    window.api.timerRefresh();
+  }
+});
+window.addEventListener('focus', () => {
+  applyTimerState();
+  window.api.timerRefresh();
 });
 
 // Stop can also come from the floating widget's own button.
 window.api.onTimerStopped(() => {
+  lastTimerState = null;
   if (!active) return;
   const id = active.taskId;
   active = null;

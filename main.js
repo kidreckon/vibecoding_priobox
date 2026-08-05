@@ -171,9 +171,12 @@ function timerPayload(extra) {
       taskId: timer.taskId,
       title: timer.title,
       color: timer.color,
-      remaining: Math.ceil(timer.remainingMs / 1000),
-      total: Math.round(timer.totalMs / 1000),
-      spentMs: timer.spentMs,
+      totalMs: timer.totalMs,
+      // Authoritative at the moment of broadcast. While running, endsAt lets a
+      // client extrapolate the true value itself instead of trusting that ticks
+      // keep arriving — the whole point of the deadline model.
+      remainingMs: timer.remainingMs,
+      endsAt: timer.endsAt,
       baseSpent: timer.baseSpent,
       running: timer.running
     },
@@ -192,24 +195,19 @@ function broadcastTimer(extra) {
   }
 }
 
-// Fold the real time that has passed since the last accounting into the timer.
-function applyElapsed() {
-  const now = Date.now();
-  const delta = now - timer.lastAt;
-  timer.lastAt = now;
-  if (!timer.running || delta <= 0) return;
-  // Never bank more "time spent" than the countdown actually had left, so a
-  // laptop sleeping through the timer just completes it rather than inflating
-  // the tracked minutes.
-  const applied = Math.min(delta, timer.remainingMs);
-  timer.remainingMs -= applied;
-  timer.spentMs += applied;
+// Remaining time is a pure function of the wall clock and the deadline, never
+// an accumulation of ticks. A tick that is late, coalesced, dropped entirely or
+// missed because the process was suspended therefore costs nothing: the next
+// read of the clock is still exactly right.
+function syncFromClock() {
+  if (!timer || !timer.running) return;
+  timer.remainingMs = Math.max(0, timer.endsAt - Date.now());
 }
 
 function tick() {
   if (!timer) return;
-  applyElapsed();
-  if (timer.remainingMs <= 0) finishTimer();
+  syncFromClock();
+  if (timer.running && timer.remainingMs <= 0) finishTimer();
   else broadcastTimer();
 }
 
@@ -265,14 +263,15 @@ function stopTimer() {
 
 function pauseTimer() {
   if (!timer || !timer.running) return;
-  applyElapsed();
+  syncFromClock();
   timer.running = false;
+  timer.endsAt = 0;
   broadcastTimer();
 }
 
 function resumeTimer() {
   if (!timer || timer.running) return;
-  timer.lastAt = Date.now();
+  timer.endsAt = Date.now() + timer.remainingMs;
   timer.running = true;
   broadcastTimer();
 }
@@ -294,12 +293,11 @@ ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds, baseSpent }) =
     color,
     totalMs: ms,
     remainingMs: ms,
-    spentMs: 0,
+    endsAt: Date.now() + ms,
     // The task's tracked seconds before this run, echoed back on every update
     // so the board can recompute its total without keeping its own tally.
     baseSpent: Number(baseSpent) || 0,
     running: true,
-    lastAt: Date.now(),
     intervalId: setInterval(tick, TICK_MS)
   };
   holdAwake();
@@ -316,12 +314,22 @@ ipcMain.on('timer:start', (_evt, { taskId, title, color, seconds, baseSpent }) =
 ipcMain.on('timer:pause', pauseTimer);
 ipcMain.on('timer:resume', resumeTimer);
 ipcMain.on('timer:stop', stopTimer);
+ipcMain.on('timer:refresh', refreshTimer);
 
 // Controls pressed on the floating widget act on the same authoritative timer.
 ipcMain.on('floating:control', (_evt, action) => {
   if (action === 'pause') pauseTimer();
   else if (action === 'resume') resumeTimer();
   else if (action === 'stop') stopTimer();
+  else if (action === 'expired') {
+    // The widget is always on screen, so its clock is the least likely to be
+    // starved. If it sees the deadline pass before this process notices, take
+    // its word for it rather than letting the timer hang at 00:00.
+    syncFromClock();
+    if (timer && timer.running && timer.remainingMs <= 0) finishTimer();
+  } else if (action === 'refresh') {
+    refreshTimer();
+  }
 });
 
 // ---------------------------------------------------------------------------
