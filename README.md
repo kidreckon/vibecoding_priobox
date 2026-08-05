@@ -46,8 +46,27 @@ npm start
 npm run dist
 ```
 
-The packaged app lands in `dist/`. Because the app makes no network calls, it
-runs completely offline once built.
+The packaged app lands in `dist/`. Drag `PrioBox.app` to `/Applications`.
+Because the app makes no network calls, it runs completely offline once built.
+
+## Updating an installed `.app`
+
+**`git pull` does not update `PrioBox.app`.** The built app is a self-contained
+snapshot taken at build time, so pulling new source leaves the installed copy
+running the old code. To pull, rebuild and reinstall in one step:
+
+```bash
+npm run update
+```
+
+The version badge under the title in the app shows which build is actually
+running — check it after updating.
+
+## Something not working?
+
+The app keeps a local diagnostics log: which process stalled and for how long,
+whether the countdown's App Nap keep-alive was live, and window visibility.
+Open **History → Show diagnostics log**. It never leaves your Mac.
 
 ## Where is my data?
 
