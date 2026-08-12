@@ -18,6 +18,14 @@ lives in a local JSON file on your Mac.
   board; **Clear history** wipes the archive (two-step confirm).
 - **Recolor any task.** Click the 🎨 button on a card and pick from a palette.
   The color shows up as the card's accent stripe (and on the floating timer).
+- **Subtasks, with time that rolls up.** Click **+** on a task to add subtasks
+  under it. Track time on a subtask and it counts towards the parent's total —
+  the parent's badge shows its own time plus every subtask's, and hovering it
+  breaks the figure down. Dragging a parent moves its whole group; dropping a
+  plain task into a group nests it; **⤴** on a subtask promotes it back to
+  top level. Finishing a parent finishes its subtasks with it, and finishing a
+  subtask leaves its time with the parent so completed work never vanishes from
+  the total.
 - **Per-task countdown.** Click ▶ on a card, choose a duration in **30-minute
   steps**, and start it. Only one timer runs at a time.
 - **Always-on-top desktop timer.** When a countdown starts, a small frameless

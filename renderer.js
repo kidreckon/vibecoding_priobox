@@ -60,6 +60,8 @@ async function boot() {
     state.tasks.forEach((t, i) => {
       if (!t.color) t.color = PALETTE[i % PALETTE.length];
       if (typeof t.secondsSpent !== 'number') t.secondsSpent = 0;
+      // Saves predating subtasks have no nesting at all.
+      if (!t.parentId) t.parentId = null;
     });
   }
   render();
@@ -96,15 +98,124 @@ function getTask(id) {
 }
 
 // ===========================================================================
+// Hierarchy
+//
+// Tasks stay in one flat, ordered array; `parentId` marks a child. The array is
+// kept in display order with a parent's children immediately following it, so
+// the drag code can go on reading order straight off the DOM. Nesting is one
+// level deep: a child cannot itself have children.
+// ===========================================================================
+function childrenOf(id) {
+  return state.tasks.filter((t) => t.parentId === id);
+}
+
+function hasChildren(id) {
+  return state.tasks.some((t) => t.parentId === id);
+}
+
+// A parent's time is its own plus every child's, including time inherited from
+// children that have since been finished — completing a subtask must not make
+// the effort logged against its parent disappear.
+function totalSeconds(task) {
+  if (task.parentId) return task.secondsSpent;
+  return (
+    task.secondsSpent +
+    (task.rolledUpSeconds || 0) +
+    childrenOf(task.id).reduce((sum, c) => sum + c.secondsSpent, 0)
+  );
+}
+
+// Restore the invariant: top-level tasks in order, each followed by its own
+// children. Anything pointing at a missing or non-top-level parent is promoted
+// rather than silently vanishing from the board.
+function normalizeOrder() {
+  const byId = new Map(state.tasks.map((t) => [t.id, t]));
+  for (const t of state.tasks) {
+    if (!t.parentId) continue;
+    const parent = byId.get(t.parentId);
+    if (!parent || parent.parentId) t.parentId = null;
+  }
+  const ordered = [];
+  for (const t of state.tasks) {
+    if (t.parentId) continue;
+    ordered.push(t);
+    for (const c of state.tasks) {
+      if (c.parentId === t.id) ordered.push(c);
+    }
+  }
+  state.tasks = ordered;
+}
+
+// ===========================================================================
 // Render
 // ===========================================================================
+// Set while an inline "add a subtask" input is open on a parent.
+let addingChildFor = null;
+
 function render() {
+  normalizeOrder();
   taskListEl.innerHTML = '';
+
+  // The subtask input belongs after the parent's existing children, so a new
+  // subtask appears exactly where it will land — or directly under the parent
+  // when it has none yet.
+  const kids = addingChildFor ? childrenOf(addingChildFor) : [];
+  const inputAfter = !addingChildFor ? null
+    : kids.length ? kids[kids.length - 1].id : addingChildFor;
+
   for (const task of state.tasks) {
     taskListEl.appendChild(taskNode(task));
+    if (task.id === inputAfter) {
+      taskListEl.appendChild(childInputNode(addingChildFor));
+    }
   }
   emptyHint.style.display = state.tasks.length ? 'none' : 'block';
   renderDoneCount();
+}
+
+// The inline input is appended after the parent's existing children, so a new
+// subtask appears where it will actually land.
+function childInputNode(parentId) {
+  const li = document.createElement('li');
+  li.className = 'child-input';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Subtask name — Enter to add, Esc to cancel';
+  input.maxLength = 120;
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const value = input.value.trim();
+      if (value) {
+        addTask(value, parentId);
+        input.value = '';
+        // Stay open so several subtasks can be added in a row.
+        render();
+        const next = taskListEl.querySelector('.child-input input');
+        if (next) next.focus();
+      }
+    } else if (e.key === 'Escape') {
+      addingChildFor = null;
+      render();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // Let a click on another control land before tearing the row down.
+    setTimeout(() => {
+      // Adding a subtask re-renders, which detaches this input and fires its
+      // blur — without this guard that stale event would close the fresh row
+      // that just replaced it.
+      if (!input.isConnected) return;
+      if (addingChildFor === parentId && !input.value.trim()) {
+        addingChildFor = null;
+        render();
+      }
+    }, 120);
+  });
+
+  li.appendChild(input);
+  return li;
 }
 
 function renderDoneCount() {
@@ -113,15 +224,17 @@ function renderDoneCount() {
 
 function taskNode(task) {
   const running = active && active.taskId === task.id && active.running;
+  const isChild = !!task.parentId;
+  const kids = isChild ? [] : childrenOf(task.id);
 
   const li = document.createElement('li');
-  li.className = 'task' + (running ? ' running' : '');
+  li.className = 'task' + (running ? ' running' : '') + (isChild ? ' child' : '');
   li.dataset.id = task.id;
   li.style.setProperty('--task-color', task.color);
 
   const grip = document.createElement('span');
   grip.className = 'grip';
-  grip.textContent = '⋮⋮';
+  grip.textContent = isChild ? '↳' : '⋮⋮';
 
   const title = document.createElement('span');
   title.className = 'title';
@@ -129,7 +242,30 @@ function taskNode(task) {
 
   const spent = document.createElement('span');
   spent.className = 'time-spent';
-  spent.textContent = formatSpent(task.secondsSpent);
+  spent.textContent = formatSpent(totalSeconds(task));
+  if (kids.length) {
+    spent.classList.add('rolled-up');
+    spent.title =
+      `${formatSpent(task.secondsSpent + (task.rolledUpSeconds || 0))} on this task, ` +
+      `${formatSpent(totalSeconds(task) - task.secondsSpent - (task.rolledUpSeconds || 0))} ` +
+      `across ${kids.length} subtask${kids.length > 1 ? 's' : ''}`;
+  }
+
+  li.append(grip, title, spent);
+
+  if (isChild) {
+    const promote = document.createElement('button');
+    promote.className = 'icon-btn promote-btn';
+    promote.title = 'Make this a top-level task';
+    promote.textContent = '⤴';
+    li.appendChild(promote);
+  } else {
+    const addChild = document.createElement('button');
+    addChild.className = 'icon-btn add-child-btn';
+    addChild.title = 'Add a subtask';
+    addChild.textContent = '+';
+    li.appendChild(addChild);
+  }
 
   const colorBtn = document.createElement('button');
   colorBtn.className = 'icon-btn color-btn';
@@ -141,16 +277,23 @@ function taskNode(task) {
   playBtn.title = running ? 'Stop timer' : 'Start timer';
   playBtn.textContent = running ? '■' : '▶';
 
-  li.append(grip, title, spent, colorBtn, playBtn);
+  li.append(colorBtn, playBtn);
   return li;
 }
 
-function updateTaskTimeLabel(id) {
+function setTimeLabel(id) {
   const task = getTask(id);
   const li = taskListEl.querySelector(`.task[data-id="${id}"]`);
   if (task && li) {
-    li.querySelector('.time-spent').textContent = formatSpent(task.secondsSpent);
+    li.querySelector('.time-spent').textContent = formatSpent(totalSeconds(task));
   }
+}
+
+// Time logged against a child also moves its parent's rolled-up total.
+function updateTaskTimeLabel(id) {
+  setTimeLabel(id);
+  const task = getTask(id);
+  if (task && task.parentId) setTimeLabel(task.parentId);
 }
 
 function setRunningVisual(id, isRunning) {
@@ -165,21 +308,43 @@ function setRunningVisual(id, isRunning) {
 // ===========================================================================
 // Add / color
 // ===========================================================================
+function addTask(title, parentId) {
+  const parent = parentId ? getTask(parentId) : null;
+  const task = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title,
+    // Subtasks inherit their parent's colour so a group reads as one unit.
+    color: parent ? parent.color : PALETTE[state.tasks.length % PALETTE.length],
+    secondsSpent: 0,
+    parentId: parent ? parent.id : null
+  };
+  state.tasks.push(task);
+  save();
+  return task;
+}
+
 addForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const value = addInput.value.trim();
   if (!value) return;
-  const task = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    title: value,
-    color: PALETTE[state.tasks.length % PALETTE.length],
-    secondsSpent: 0
-  };
-  state.tasks.push(task);
+  addTask(value, null);
   addInput.value = '';
   render();
-  save();
 });
+
+function promoteTask(id) {
+  const task = getTask(id);
+  if (!task || !task.parentId) return;
+  const parent = getTask(task.parentId);
+  // The parent keeps the time already logged against it by this child, so
+  // detaching a subtask does not rewrite history.
+  if (parent) {
+    parent.rolledUpSeconds = (parent.rolledUpSeconds || 0) + task.secondsSpent;
+  }
+  task.parentId = null;
+  render();
+  save();
+}
 
 function togglePalette(li, id) {
   const existing = li.querySelector('.palette');
@@ -228,6 +393,15 @@ taskListEl.addEventListener('click', (e) => {
     togglePalette(li, id);
   } else if (e.target.closest('.play-btn')) {
     onPlay(id);
+  } else if (e.target.closest('.add-child-btn')) {
+    e.stopPropagation();
+    addingChildFor = addingChildFor === id ? null : id;
+    render();
+    const input = taskListEl.querySelector('.child-input input');
+    if (input) input.focus();
+  } else if (e.target.closest('.promote-btn')) {
+    e.stopPropagation();
+    promoteTask(id);
   }
 });
 
@@ -247,6 +421,10 @@ function startPointer(e, li) {
   drag = {
     el: li,
     id: li.dataset.id,
+    // A parent travels with its children; they are lifted out of the list for
+    // the duration and put back underneath it wherever it lands.
+    isGroup: hasChildren(li.dataset.id),
+    parentIdAtStart: (getTask(li.dataset.id) || {}).parentId || null,
     startX: e.clientX,
     startY: e.clientY,
     grabDX: e.clientX - rect.left,
@@ -286,7 +464,21 @@ function onPointerMove(e) {
 function beginDrag() {
   drag.started = true;
   closeAllPalettes();
+  if (addingChildFor) {
+    addingChildFor = null;
+    const row = taskListEl.querySelector('.child-input');
+    if (row) row.remove();
+  }
   const el = drag.el;
+
+  // Collapse the group down to the parent card while it is in flight; render()
+  // rebuilds the children under it once the drop is committed.
+  if (drag.isGroup) {
+    for (const child of childrenOf(drag.id)) {
+      const node = taskListEl.querySelector(`.task[data-id="${child.id}"]`);
+      if (node) node.remove();
+    }
+  }
 
   const ph = document.createElement('li');
   ph.className = 'drag-placeholder';
@@ -381,6 +573,8 @@ function onPointerUp() {
     if (ph.parentNode) ph.parentNode.replaceChild(el, ph);
     commitOrderFromDOM();
     drag = null;
+    // Rebuild so indentation, grips and rolled-up totals match the new nesting.
+    render();
   };
   el.style.transition = 'left 0.18s ease, top 0.18s ease, transform 0.18s ease';
   el.style.left = target.left + 'px';
@@ -404,8 +598,57 @@ function clearDragStyles(el) {
 
 function commitOrderFromDOM() {
   const ids = [...taskListEl.querySelectorAll('.task')].map((el) => el.dataset.id);
-  state.tasks.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  const rank = new Map(ids.map((id, i) => [id, i]));
+
+  // A dragged parent's children are not in the DOM right now; rank them just
+  // behind their parent so they follow it to its new position.
+  const rankOf = (t) =>
+    rank.has(t.id) ? rank.get(t.id)
+      : rank.has(t.parentId) ? rank.get(t.parentId) + 0.5
+        : Number.MAX_SAFE_INTEGER;
+  state.tasks.sort((a, b) => rankOf(a) - rankOf(b));
+
+  applyDropNesting(ids);
+  normalizeOrder();
   save();
+}
+
+// Decide whether the dropped task became someone's subtask. Nesting only
+// happens when it is dropped into an existing group — dropping next to a
+// childless task is a plain reorder, which keeps ordinary dragging predictable.
+// A parent being dragged always stays top-level so groups cannot nest.
+function applyDropNesting(ids) {
+  const task = getTask(drag.id);
+  if (!task || drag.isGroup) {
+    if (task) task.parentId = null;
+    return;
+  }
+
+  const idx = ids.indexOf(task.id);
+  const above = idx > 0 ? getTask(ids[idx - 1]) : null;
+
+  if (!above) task.parentId = null;
+  else if (above.parentId) task.parentId = above.parentId; // into a group
+  else if (hasChildren(above.id)) task.parentId = above.id; // onto a group head
+  else task.parentId = null; // beside a plain task — stay top-level
+
+  // Detaching from a parent leaves the time already logged behind, so the
+  // parent's total does not drop when a subtask is dragged out of it.
+  const from = drag.parentIdAtStart || null;
+  if (from && from !== task.parentId) {
+    const parent = getTask(from);
+    if (parent) {
+      parent.rolledUpSeconds = (parent.rolledUpSeconds || 0) + task.secondsSpent;
+    }
+  }
+  // Joining a parent that had previously inherited this task's time gives it
+  // back, so moving a subtask between parents does not double-count it.
+  if (task.parentId && task.parentId !== from) {
+    const parent = getTask(task.parentId);
+    if (parent && parent.rolledUpSeconds) {
+      parent.rolledUpSeconds = Math.max(0, parent.rolledUpSeconds - task.secondsSpent);
+    }
+  }
 }
 
 function finishTask(id, el, ph) {
@@ -417,25 +660,55 @@ function finishTask(id, el, ph) {
     if (ph && ph.parentNode) flipReorder(() => ph.remove());
   }, 200);
 
-  if (active && active.taskId === id) stopTimer();
-
-  // Archive it before it leaves the row, so the history panel can show it.
   const task = getTask(id);
-  if (task) {
+  if (!task) return;
+
+  // Finishing a parent finishes the whole group with it.
+  const kids = task.parentId ? [] : childrenOf(id);
+  const going = [task, ...kids];
+
+  if (active && going.some((t) => t.id === active.taskId)) stopTimer();
+
+  // Archive before they leave the row, so the history panel can show them.
+  const now = Date.now();
+  for (const t of going) {
     state.done.unshift({
-      id: task.id,
-      title: task.title,
-      color: task.color,
-      secondsSpent: task.secondsSpent,
-      completedAt: Date.now()
+      id: t.id,
+      title: t.title,
+      color: t.color,
+      // A parent is recorded with the total it actually accumulated.
+      secondsSpent: totalSeconds(t),
+      // Resolve the real parent: `task` is the child itself when a subtask is
+      // finished on its own, so its own title must not be used here.
+      parentTitle: t.parentId ? (getTask(t.parentId) || {}).title || null : null,
+      completedAt: now
     });
   }
 
-  state.tasks = state.tasks.filter((t) => t.id !== id);
-  state.doneCount += 1;
+  // A finished subtask leaves its time with its parent — the work still counts
+  // towards the parent even though the subtask is gone from the board.
+  if (task.parentId) {
+    const parent = getTask(task.parentId);
+    if (parent) {
+      parent.rolledUpSeconds = (parent.rolledUpSeconds || 0) + task.secondsSpent;
+    }
+  }
+
+  const goingIds = new Set(going.map((t) => t.id));
+  state.tasks = state.tasks.filter((t) => !goingIds.has(t.id));
+  state.doneCount += going.length;
   renderDoneCount();
   emptyHint.style.display = state.tasks.length ? 'none' : 'block';
   save();
+
+  // Children were removed from the model but their rows are still on screen.
+  if (kids.length) {
+    for (const child of kids) {
+      const node = taskListEl.querySelector(`.task[data-id="${child.id}"]`);
+      if (node) node.remove();
+    }
+  }
+  if (task.parentId) setTimeLabel(task.parentId);
 }
 
 // ===========================================================================
@@ -651,9 +924,10 @@ function renderHistory() {
     const meta = document.createElement('div');
     meta.className = 'history-meta';
     const when = formatWhen(entry.completedAt);
-    meta.textContent = when
-      ? `${formatSpent(entry.secondsSpent || 0)} tracked · ${when}`
-      : `${formatSpent(entry.secondsSpent || 0)} tracked`;
+    const parts = [`${formatSpent(entry.secondsSpent || 0)} tracked`];
+    if (entry.parentTitle) parts.push(`↳ ${entry.parentTitle}`);
+    if (when) parts.push(when);
+    meta.textContent = parts.join(' · ');
 
     body.append(title, meta);
 
@@ -689,11 +963,29 @@ function restoreTask(entryId) {
   if (idx === -1) return;
 
   const [entry] = state.done.splice(idx, 1);
+
+  // Re-attach to its parent if that parent is still on the board, handing back
+  // the time the parent inherited when the subtask was finished. Otherwise it
+  // returns as a top-level task.
+  let parentId = null;
+  if (entry.parentTitle) {
+    const parent = state.tasks.find(
+      (t) => !t.parentId && t.title === entry.parentTitle
+    );
+    if (parent) {
+      parentId = parent.id;
+      parent.rolledUpSeconds = Math.max(
+        0, (parent.rolledUpSeconds || 0) - (entry.secondsSpent || 0)
+      );
+    }
+  }
+
   state.tasks.push({
     id: entry.id,
     title: entry.title,
     color: entry.color || PALETTE[0],
-    secondsSpent: entry.secondsSpent || 0
+    secondsSpent: entry.secondsSpent || 0,
+    parentId
   });
   state.doneCount = Math.max(0, state.doneCount - 1);
 

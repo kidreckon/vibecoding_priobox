@@ -171,6 +171,52 @@ body {
 
 .task:hover { background: var(--panel-2); }
 
+/* Subtask: indented, slightly recessed, visually subordinate to its parent */
+.task.child {
+  margin-left: 22px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left-width: 3px;
+  border-radius: 11px;
+}
+
+.task.child .title { font-size: 13px; }
+
+.task.child .grip {
+  letter-spacing: 0;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+/* A parent's badge shows its own time plus every subtask's */
+.time-spent.rolled-up {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-weight: 600;
+}
+
+.add-child-btn { font-size: 16px; line-height: 1; }
+.promote-btn { font-size: 13px; }
+
+/* Inline "add a subtask" row */
+.child-input {
+  margin: -2px 0 10px 22px;
+}
+
+.child-input input {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 11px;
+  padding: 10px 12px;
+  font-size: 13px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+  box-shadow: 0 0 0 3px rgba(108, 123, 255, 0.15);
+}
+
 /* Smooth reorder: non-dragged items glide to their new slots */
 .task.settling {
   transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
